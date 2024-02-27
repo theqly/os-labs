@@ -25,19 +25,14 @@ int main(int argc, char** argv){
         return 1;
     }
 
-    printf("Reading pagemap file for PID %d: %s\n", pid, path);
+    //printf("reading pagemap file for PID %d: %s\n", pid, path);
 
     uint64_t entry;
-    size_t read_bytes;
+    ssize_t read_bytes;
     uintptr_t virtual_address = 0;
 
     while ((read_bytes = read(fd, &entry, sizeof(entry))) > 0) {
-        if (entry & (1ULL << 63)) {
-            uint64_t pfn = entry & PFN_MASK;
-            uintptr_t physical_address = pfn << 12;
-            printf("VA: 0x%016lx -> PA: 0x%016lx\n", virtual_address, physical_address);
-        }
-        virtual_address += sysconf(_SC_PAGE_SIZE);
+
     }
 
     if (read_bytes < 0) {
