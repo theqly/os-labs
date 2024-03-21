@@ -38,32 +38,31 @@ static void udp_server(int port) {
 }
 
 static void client(int port) {
-    const int client_fd = socket(PF_INET, SOCK_DGRAM, 0);
+    const int server_fd = socket(PF_INET, SOCK_DGRAM, 0);
 
-    struct sockaddr_in client_addr = { 0 };
-    client_addr.sin_family = AF_INET;
-    client_addr.sin_port = htons(port);
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
 
     char addrstr[NI_MAXHOST + NI_MAXSERV + 1];
     snprintf(addrstr, sizeof(addrstr), "127.0.0.1:%d", port);
 
-    inet_pton(AF_INET, addrstr, &addr.sin_addr);
+    inet_pton(AF_INET, addrstr, &server_addr.sin_addr);
 
-    struct sockaddr_in server_addr;
-    socklen_t client_addr_len = sizeof(server_addr);
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
 
     char message[1024];
     while (1) {
         fputs("enter your message: ", stdout);
         fgets(message,1024, stdin);
         if(!strcmp(message, "quit\n")) break;
-        sendto(client_fd, message, 1024, 0, &server_addr, );
-        int len = recv(client_fd, message, 1024, 0);
+        sendto(server_fd, message, 1024, 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
+        int len = recvfrom(server_fd, message, 1024, 0, (struct sockaddr*)&addr, &addr_len);
         message[len-1] = '\0';
         printf("message from server: %s", message);
     }
 
-    close(client_fd);
 }
 
 int main(int argc, char *argv[]) {

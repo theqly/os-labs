@@ -1,6 +1,14 @@
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/types.h>
+
+#define PAGE_SIZE 4096
+#define PFN_MASK ((((uint64_t)1) << 55) - 1)
 
 int main(int argc, char** argv){
     if (argc != 2){
@@ -25,14 +33,18 @@ int main(int argc, char** argv){
         return 1;
     }
 
-    //printf("reading pagemap file for PID %d: %s\n", pid, path);
-
     uint64_t entry;
     ssize_t read_bytes;
     uintptr_t virtual_address = 0;
 
     while ((read_bytes = read(fd, &entry, sizeof(entry))) > 0) {
+        if(entry & (1ULL << 63)){
+        uint64_t pfn = entry & PFN_MASK;
+        uintptr_t physical_address = pfn << 12;
+        printf("virtual: 0x%016lx -> physical: 0x%016lx\n", virtual_address, physical_address);
+        }
 
+        virtual_address += sysconf(_SC_PAGE_SIZE);
     }
 
     if (read_bytes < 0) {
