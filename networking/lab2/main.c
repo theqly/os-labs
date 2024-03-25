@@ -39,7 +39,7 @@ static void tcp_server(int port) {
 
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
-    int client_fd, len;
+    int client_fd, read_bytes;
     pid_t pid;
 
     char message[1024];
@@ -49,12 +49,20 @@ static void tcp_server(int port) {
             perror("accept error: ");
             continue;
         }
+        printf("new connection with socket %d on %s:%d\n", client_fd, inet_ntoa(server_addr.sin_addr), ntohs(server_addr.sin_port));
         pid = fork();
         if(pid == 0) {
             close(server_fd);
-            while((len = recv(client_fd, message, sizeof(message), 0)) != 0) {
+            while(1) {
+                if((read_bytes = recv(client_fd, message, sizeof(message), 0)) <= 0) {
+                    if(read_bytes == 0) printf("host %d disconnected\n", client_fd);
+                    else perror("recv error: ");
+                    close(client_fd);
+                    break;
+                }
                 printf("client %d says: %s", client_fd, message);
-                send(client_fd, message, len, 0);
+                send(client_fd, message, read_bytes, 0);
+
             }
             return;
         }
@@ -64,6 +72,7 @@ static void tcp_server(int port) {
             close(client_fd);
         }
 
+        close(client_fd);
     }
 }
 
@@ -92,12 +101,14 @@ static void client(int port) {
             perror("error with sending");
             return;
         }
-        int len = recv(fd, message, 1024, 0);
-        if(len == -1) {
-            perror("error with reciving");
-            return;
+        int read_bytes = recv(fd, message, 1024, 0);
+        if(read_bytes <= 0) {
+            if(read_bytes == 0) printf("server is not available\n");
+            else perror("recv error: ");
+            close(fd);
+            break;
         }
-        message[len] = '\0';
+        message[read_bytes] = '\0';
         printf("message from server: %s", message);
     }
 

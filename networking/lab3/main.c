@@ -58,7 +58,7 @@ static void tcp_server(int port) {
                 return;
             }
 
-            printf("New connection with socket %d on %s:%d\n", new_client_fd, inet_ntoa(server_addr.sin_addr), ntohs(server_addr.sin_port));
+            printf("new connection with socket %d on %s:%d\n", new_client_fd, inet_ntoa(server_addr.sin_addr), ntohs(server_addr.sin_port));
 
             for(int i = 1; i < 11; ++i) {
                 if(client_sockets[i-1] == 0) {
@@ -75,7 +75,7 @@ static void tcp_server(int port) {
                 fds[i].revents = 0;
                 int read_bytes;
                 if((read_bytes = recv(client_sockets[i-1], message, 1024, 0)) <= 0) {
-                    if(read_bytes == 0) printf("Host %d disconnected\n", client_sockets[i-1]);
+                    if(read_bytes == 0) printf("host %d disconnected\n", client_sockets[i-1]);
                     else perror("recv error: ");
                     close(client_sockets[i-1]);
                     client_sockets[i-1] = 0;
@@ -116,12 +116,14 @@ static void client(int port) {
             perror("error with sending");
             return;
         }
-        int len = recv(fd, message, 1024, 0);
-        if(len == -1) {
-            perror("error with reciving");
-            return;
+        int read_bytes = recv(fd, message, 1024, 0);
+        if(read_bytes <= 0) {
+            if(read_bytes == 0) printf("server is not available\n");
+            else perror("recv error: ");
+            close(fd);
+            break;
         }
-        message[len] = '\0';
+        message[read_bytes] = '\0';
         printf("message from server: %s", message);
     }
 
