@@ -43,7 +43,7 @@ void signal_handler(int signal_num){
 }
 
 int main(int argc, char** argv){
-    printf("watch -n 0.1 cat /proc/%d/maps\n", getpid());
+    printf("watch -d -n 0.1 cat /proc/%d/maps\n", getpid());
     pid_t pid = getpid();
     //sleep(10);
     //stack_overflow(0);
