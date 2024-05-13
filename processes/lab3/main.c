@@ -17,7 +17,7 @@ void recursion(int i) {
 
 int child_doing_recursion() {
     recursion(0);
-    return 0;
+    return 15;
 }
 
 int main() {
