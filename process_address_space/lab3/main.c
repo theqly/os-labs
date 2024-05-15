@@ -2,8 +2,10 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-#define MAX_HEAP_SIZE 4096
+#define MAX_HEAP_SIZE 1024
 
 struct info {
     size_t size;
@@ -14,12 +16,23 @@ struct info {
 void* heap_start;
 
 void prepare(){
-    void* heap = mmap(NULL, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int fd = open("malloc.txt", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        perror("open error");
+        return;
+    }
+
+    if (ftruncate(fd, MAX_HEAP_SIZE) == -1) {
+        perror("ftruncate error");
+        close(fd);
+        return;
+    }
+
+    void* heap = mmap(NULL, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     if(heap == MAP_FAILED){
         perror("mmap error");
         exit(1);
     }
-    memset(heap, 0, MAX_HEAP_SIZE);
     heap_start = heap;
     printf("info size: %lu\n", sizeof(struct info));
     ((struct info*)heap_start)->size = MAX_HEAP_SIZE - sizeof(struct info);
@@ -77,15 +90,19 @@ void my_free(void* memory){
 }
 
 int main(){
-    char* arr1 = my_malloc(4047);
+    char* arr1 = my_malloc(1024);
     if(arr1 == NULL) return 1;
     char* arr = my_malloc(1);
     if(arr == NULL) return 2;
     arr1[31] = 54;
+    for(int i = 0; i < 1024; ++i){
+        arr1[i] = i;
+    }
     printf("arr[31] = %d\n", arr1[31]);
     my_free(arr);
     my_free(arr1);
     char* arr3 = my_malloc(4047);
+    printf("arr[31] = %d\n", arr1[31]);
     if(arr3 == NULL) return 1;
     char* arr4 = my_malloc(1);
     if(arr4 == NULL) return 2;

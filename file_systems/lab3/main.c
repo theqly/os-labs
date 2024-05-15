@@ -34,7 +34,7 @@ void read_pagemap(char * path_buf, unsigned long virt_addr){
         physical_address = (physical_address << 8) + char_buf[i];
     }
 
-    printf("Virtual address: 0x%lx -> Physical address: 0x%llx\n", virt_addr, (unsigned long long) GET_PFN(physical_address));
+    printf("Virtual address: 0x%lx -> Physical address: 0x%llx\n", virt_addr, (unsigned long long) physical_address);
 
     fclose(f);
 }
