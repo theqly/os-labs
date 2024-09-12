@@ -70,6 +70,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: ./lab1 <server or client> <port>");
         return 1;
     }
+    printf("pid: %d\n", getpid());
     int port;
     sscanf(argv[2], "%d", &port);
     if(!strcmp(argv[1], "client"))  client(port);

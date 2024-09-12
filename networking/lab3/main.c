@@ -91,7 +91,7 @@ static void tcp_server(int port) {
     }
 }
 
-static void client(int port) {
+void client(int port) {
     const int fd = socket(PF_INET, SOCK_STREAM, 0);
 
     struct sockaddr_in addr = { 0 };
