@@ -15,7 +15,7 @@ void* mythread(void* arg) {
 
     while (1) {
         //printf("hello\n");
-        //++counter;
+        //counter;
         printf("%s", str);
         pthread_testcancel();
     }
