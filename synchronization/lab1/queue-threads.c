@@ -78,7 +78,7 @@ int main() {
 
 	printf("main [%d %d %d]\n", getpid(), getppid(), gettid());
 
-	q = queue_init(1000000);
+	q = queue_init(100000);
 
 	err = pthread_create(&tid, NULL, reader, q);
 	if (err) {
@@ -86,7 +86,7 @@ int main() {
 		return -1;
 	}
 
-	sched_yield();
+	//sched_yield();
 
 	err = pthread_create(&tid, NULL, writer, q);
 	if (err) {
