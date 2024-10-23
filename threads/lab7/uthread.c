@@ -77,4 +77,7 @@ void schedule() {
 
 void scheduler_destroy() {
   free(sched.threads[0]);
+  for(int i = 1; i < sched.thread_count; i++) {
+    munmap(sched.threads[i]->context.uc_stack.ss_sp, STACK_SIZE);
+  }
 }
