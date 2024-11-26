@@ -32,6 +32,7 @@ int target_connection(char *host, int port) {
 
   if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
     perror("connect");
+    close(sock);
     return -1;
   }
 
@@ -163,6 +164,7 @@ void server_run() {
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) ==
       -1) {
     perror("setsockopt");
+    close(server_fd);
     return;
   }
 
@@ -171,17 +173,20 @@ void server_run() {
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = INADDR_ANY;
   serv_addr.sin_port = htons(PORT);
+
   if (bind(server_fd, (struct sockaddr *)&serv_addr, serv_addr_len) == -1) {
     perror("bind");
+    close(server_fd);
     return;
   }
 
-  if (listen(server_fd, 5) == -1) {
+  if (listen(server_fd, MAX_USER_COUNT) == -1) {
     perror("listen");
+    close(server_fd);
     return;
   }
 
-  printf("Server listening on port %d.\n", PORT);
+  printf("Server started on port %d.\n", PORT);
 
   struct sockaddr_in client_addr;
   int client_addr_len = sizeof(client_addr);

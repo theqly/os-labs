@@ -1,6 +1,7 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#define MAX_USER_COUNT 10
 #define PORT 12345
 #define BUFFER_SIZE 4096
 
