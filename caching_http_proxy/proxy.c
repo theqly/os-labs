@@ -15,6 +15,25 @@
 
 #define LOG_LEVEL 1
 
+typedef struct CacheEntry {
+  char *url;
+  char *data;
+  char *data_type;
+  size_t size;
+  int is_complete;
+  pthread_mutex_t lock;
+  struct CacheEntry *next;
+} CacheEntry;
+
+CacheEntry *cache_head = NULL;
+pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+size_t current_cache_size = 0;
+
+typedef struct {
+  char *memory;
+  size_t size;
+} MemoryBlock;
+
 void log_message(const char *message, const int log_level) {
   if (log_level <= LOG_LEVEL) {
     printf("*** LOG: %s ***\n", message);
@@ -33,23 +52,18 @@ void send_error(const int sock, const int http_status) {
   send(sock, error_response, strlen(error_response), 0);
 }
 
-typedef struct CacheEntry {
-  char *url;
-  char *data;
-  size_t size;
-  int is_complete;
-  pthread_mutex_t lock;
-  struct CacheEntry *next;
-} CacheEntry;
-
-CacheEntry *cache_head = NULL;
-pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
-size_t current_cache_size = 0;
-
-typedef struct {
-  char *memory;
-  size_t size;
-} MemoryBlock;
+void send_data(const int sock, const char *data, const char* data_type, const unsigned long size) {
+  char http_response[BUFFER_SIZE];
+  snprintf(http_response, sizeof(http_response),
+           "HTTP/1.1 200 OK\r\n"
+           "Content-Type: %s\r\n"
+           "Content-Length: %zu\r\n"
+           "Connection: close\r\n\r\n",
+           data_type,
+           size);
+  send(sock, http_response, strlen(http_response), 0);
+  send(sock, data, size, 0);
+}
 
 size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
   size_t total_size = size * nmemb;
@@ -81,7 +95,6 @@ CacheEntry *find_in_cache(const char *url) {
 }
 
 void evict_cache_if_needed() {
-  pthread_mutex_lock(&cache_mutex);
   while (current_cache_size > CACHE_SIZE_LIMIT) {
     CacheEntry *prev = NULL, *curr = cache_head;
     while (curr && curr->next) {
@@ -102,10 +115,9 @@ void evict_cache_if_needed() {
       free(curr);
     }
   }
-  pthread_mutex_unlock(&cache_mutex);
 }
 
-char *fetch_url(const char *url, size_t *data_size, int *http_status) {
+char *fetch_url(const char *url, const char* data_type, size_t *data_size, int *http_status) {
   MemoryBlock chunk = {.memory = NULL, .size = 0};
 
   CURL *curl = curl_easy_init();
@@ -129,6 +141,9 @@ char *fetch_url(const char *url, size_t *data_size, int *http_status) {
     curl_easy_cleanup(curl);
     return NULL;
   }
+  char* type;
+  curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &type);
+  data_type = type ? strdup(type) : strdup("application/octet-stream");
 
   long response_code;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -185,19 +200,44 @@ void *handle_client(void *args) {
 
     pthread_mutex_lock(&cache_mutex);
     CacheEntry *entry = find_in_cache(url);
-    if (entry && entry->is_complete) {
-      log_message("url found in cache", 1);
+
+    if(entry) {
       pthread_mutex_unlock(&cache_mutex);
-      send(sock, entry->data, entry->size, 0);
-      continue;
+      pthread_mutex_lock(&entry->lock);
+
+      if(entry->is_complete) {
+        log_message("url found in cache", 1);
+        pthread_mutex_unlock(&entry->lock);
+        send_data(sock, entry->data, entry->data_type, entry->size);
+        continue;
+      }
+      pthread_mutex_unlock(&entry->lock);
+    } else {
+      pthread_mutex_unlock(&cache_mutex);
     }
 
     int http_status;
+    size_t data_size;
+    char* data_type = NULL;
+    char* data = fetch_url(url, data_type, &data_size, &http_status);
+
+    if (data_size >= CACHE_SIZE_LIMIT) {
+      send_data(sock, data, data_type, data_size);
+      continue;
+    }
+
+    if(!data) {
+      send_error(sock, 400);
+      break;
+    }
+
+    pthread_mutex_lock(&cache_mutex);
     if (!entry) {
       log_message("url not found in cache", 1);
       entry = malloc(sizeof(CacheEntry));
       entry->url = strdup(url);
       entry->data = NULL;
+      entry->data_type = NULL;
       entry->size = 0;
       entry->is_complete = 0;
       pthread_mutex_init(&entry->lock, NULL);
@@ -206,49 +246,29 @@ void *handle_client(void *args) {
     }
     pthread_mutex_unlock(&cache_mutex);
 
+    char is_added_to_cache = 0;
     pthread_mutex_lock(&entry->lock);
     if (!entry->is_complete) {
       log_message("entry incomplete", 2);
 
-      size_t data_size;
-      entry->data = fetch_url(url, &data_size, &http_status);
-      if (!entry->data) {
-        send_error(sock, http_status);
-        pthread_mutex_unlock(&entry->lock);
-        break;
-      }
-
+      entry->data = data;
+      entry->data_type = data_type;
       entry->size = data_size;
       entry->is_complete = 1;
 
-      log_message("before lock mutex", 3);
-      pthread_mutex_unlock(&entry->lock);
+      is_added_to_cache = 1;
+    }
+    pthread_mutex_unlock(&entry->lock);
 
-      //pthread_mutex_lock(&cache_mutex);
+    if(is_added_to_cache) {
+      pthread_mutex_lock(&cache_mutex);
       current_cache_size += data_size;
       evict_cache_if_needed();
-      //pthread_mutex_unlock(&cache_mutex);
-    } else {
-      pthread_mutex_unlock(&entry->lock);
+      pthread_mutex_unlock(&cache_mutex);
     }
 
-    log_message("before if", 3);
-
-    if (entry->data) {
-      char http_response[BUFFER_SIZE];
-      snprintf(http_response, sizeof(http_response),
-               "HTTP/1.1 200 OK\r\n"
-               "Content-Type: text/html\r\n"
-               "Content-Length: %zu\r\n"
-               "Connection: close\r\n\r\n",
-               entry->size);
-      send(sock, http_response, strlen(http_response), 0);
-      send(sock, entry->data, entry->size, 0);
-    } else {
-      send_error(sock, http_status);
-      pthread_mutex_unlock(&entry->lock);
-      break;
-    }
+    pthread_mutex_lock(&entry->lock);
+    send_data(sock, entry->data, entry->data_type, entry->size);
     pthread_mutex_unlock(&entry->lock);
   }
   close(sock);
@@ -306,7 +326,11 @@ int main() {
     log_message("New client connected", 0);
 
     pthread_t tid;
-    pthread_create(&tid, NULL, handle_client, client_socket);
+    if(pthread_create(&tid, NULL, handle_client, client_socket)) {
+      fprintf(stderr, "main: pthread_create() failed\n");
+      send_error(*client_socket, 500);
+      break;
+    }
     pthread_detach(tid);
   }
 
