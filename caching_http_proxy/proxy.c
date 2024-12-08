@@ -26,7 +26,6 @@ typedef struct CacheEntry {
   char is_complete;
   pthread_cond_t cond;
   pthread_mutex_t mutex;
-  pthread_rwlock_t rwlock;
   struct CacheEntry *next;
 } CacheEntry;
 
@@ -63,12 +62,12 @@ void evict_cache_if_needed() {
         cache_head = NULL;
       }
 
-      pthread_rwlock_wrlock(&curr->rwlock);
+      pthread_mutex_lock(&curr->mutex);
 
       current_cache_size -= curr->full_size;
       pthread_mutex_destroy(&curr->mutex);
       pthread_cond_destroy(&curr->cond);
-      pthread_rwlock_destroy(&curr->rwlock);
+      pthread_mutex_destroy(&curr->mutex);
       free(curr->url);
       free(curr->data);
       free(curr);
@@ -129,11 +128,11 @@ size_t header_callback(char *buffer, size_t size, size_t nitems,
   CacheEntry *entry = (CacheEntry *)userdata;
   size_t total_size = size * nitems;
 
-  pthread_rwlock_wrlock(&entry->rwlock);
+  pthread_mutex_lock(&entry->mutex);
 
   if (entry->http_status == 0 &&
       sscanf(buffer, "HTTP/1.1 %d", &entry->http_status) == 1) {
-    pthread_rwlock_unlock(&entry->rwlock);
+    pthread_mutex_unlock(&entry->mutex);
     return total_size;
   }
 
@@ -147,7 +146,7 @@ size_t header_callback(char *buffer, size_t size, size_t nitems,
     sscanf(buffer, "Content-Length: %ld", &entry->full_size);
   }
 
-  pthread_rwlock_unlock(&entry->rwlock);
+  pthread_mutex_unlock(&entry->mutex);
 
   return total_size;
 }
@@ -156,13 +155,13 @@ size_t body_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
   CacheEntry *entry = (CacheEntry *)userdata;
   size_t total_size = size * nitems;
 
-  pthread_rwlock_wrlock(&entry->rwlock);
+  pthread_mutex_lock(&entry->mutex);
 
   entry->data = realloc(entry->data, entry->cur_size + total_size + 1);
 
   if (entry->data == NULL) {
     fprintf(stderr, "Not enough memory!\n");
-    pthread_rwlock_unlock(&entry->rwlock);
+    pthread_mutex_unlock(&entry->mutex);
     return 0;
   }
 
@@ -170,7 +169,7 @@ size_t body_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
   entry->cur_size += total_size;
   entry->data[entry->cur_size] = '\0';
 
-  pthread_rwlock_unlock(&entry->rwlock);
+  pthread_mutex_unlock(&entry->mutex);
 
   pthread_cond_broadcast(&entry->cond);
 
@@ -181,9 +180,9 @@ int fetch_header(const char *url, CacheEntry *entry) {
   CURL *curl = curl_easy_init();
   if (!curl) {
     fprintf(stderr, "Failed to initialize libcurl\n");
-    pthread_rwlock_wrlock(&entry->rwlock);
+    pthread_mutex_lock(&entry->mutex);
     entry->http_status = 502;
-    pthread_rwlock_unlock(&entry->rwlock);
+    pthread_mutex_unlock(&entry->mutex);
     return -1;
   }
 
@@ -196,9 +195,9 @@ int fetch_header(const char *url, CacheEntry *entry) {
   if (res != CURLE_OK) {
     fprintf(stderr, "curl_easy_perform() failed: %s\n",
             curl_easy_strerror(res));
-    pthread_rwlock_wrlock(&entry->rwlock);
+    pthread_mutex_lock(&entry->mutex);
     entry->http_status = 502;
-    pthread_rwlock_unlock(&entry->rwlock);
+    pthread_mutex_unlock(&entry->mutex);
     curl_easy_cleanup(curl);
     return -1;
   }
@@ -224,35 +223,34 @@ int fetch_data(const char *url, CacheEntry *entry) {
   if (res != CURLE_OK) {
     fprintf(stderr, "curl_easy_perform() failed: %s\n",
             curl_easy_strerror(res));
-    pthread_rwlock_wrlock(&entry->rwlock);
+    pthread_mutex_lock(&entry->mutex);
     entry->http_status = 502;
-    pthread_rwlock_unlock(&entry->rwlock);
+    pthread_mutex_unlock(&entry->mutex);
     curl_easy_cleanup(curl);
     return -1;
   }
-  pthread_rwlock_wrlock(&entry->rwlock);
-  entry->full_size = entry->cur_size;
-  entry->is_complete = 1;
-  pthread_rwlock_unlock(&entry->rwlock);
 
   pthread_cond_broadcast(&entry->cond);
+
+  pthread_mutex_lock(&entry->mutex);
+  if(entry->full_size == 0) entry->full_size = entry->cur_size;
+  entry->is_complete = 1;
+  pthread_mutex_unlock(&entry->mutex);
 
   curl_easy_cleanup(curl);
   return 0;
 }
 
-int load_to_cache_and_send(const char *url, const int sock, CacheEntry *entry) {
-  if(fetch_header(url, entry) == -1) {
-    send_error(sock, entry->http_status);
-    return -1;
-  }
+int load_to_cache(const char *url, const int sock, CacheEntry *entry) {
 
-  pthread_rwlock_rdlock(&entry->rwlock);
+  pthread_mutex_lock(&entry->mutex);
   size_t data_size = entry->full_size;
-  pthread_rwlock_unlock(&entry->rwlock);
+  pthread_mutex_unlock(&entry->mutex);
 
   if(fetch_data(url, entry) == -1) {
+    pthread_mutex_lock(&entry->mutex);
     send_error(sock, entry->http_status);
+    pthread_mutex_unlock(&entry->mutex);
     return -1;
   }
 
@@ -261,39 +259,57 @@ int load_to_cache_and_send(const char *url, const int sock, CacheEntry *entry) {
   evict_cache_if_needed();
   pthread_rwlock_unlock(&cache_lock);
 
-  pthread_rwlock_rdlock(&entry->rwlock);
-  const ssize_t sent = send_data(sock, entry->data, entry->data_type, entry->full_size);
-  pthread_rwlock_unlock(&entry->rwlock);
+  pthread_cond_broadcast(&entry->cond);
 
-  if(sent == -1) return -1;
   return 0;
 }
 
-void send_data_from_cache(const int sock, CacheEntry *entry) {
+typedef struct {
+  int sock;
+  CacheEntry *entry;
+} send_info;
+
+void* send_data_from_cache(void* arg) {
+  send_info info = *(send_info*)arg;
+  free(arg);
+
+  log_message("in send from cache", 1);
+
   char http_response[BUFFER_SIZE];
-  pthread_rwlock_rdlock(&entry->rwlock);
+  pthread_mutex_lock(&info.entry->mutex);
   snprintf(http_response, sizeof(http_response),
            "HTTP/1.1 200 OK\r\n"
            "Content-Type: %s\r\n"
            "Connection: close\r\n\r\n",
-           entry->data_type);
-  pthread_rwlock_unlock(&entry->rwlock);
+           info.entry->data_type);
+  pthread_mutex_unlock(&info.entry->mutex);
 
-  if (send(sock, http_response, strlen(http_response), 0) < 0) return;
+  log_message("before send header send from cache", 1);
+
+  if (send(info.sock, http_response, strlen(http_response), 0) < 0) return NULL;
 
   size_t sent_bytes = 0;
 
-  while (sent_bytes < entry->full_size) {
-    pthread_cond_wait(&entry->cond, &entry->mutex);
-    pthread_rwlock_rdlock(&entry->rwlock);
-    if(entry->cur_size - sent_bytes == 0) break;
+  log_message("before while in send from cache", 1);
+
+  pthread_mutex_lock(&info.entry->mutex);
+  while (sent_bytes < info.entry->full_size) {
+    if(info.entry->http_status >= 500) {
+      break;
+    }
+    while(info.entry->cur_size == sent_bytes) {
+      pthread_cond_wait(&info.entry->cond, &info.entry->mutex);
+    }
+
     size_t cur_sent =
-        send(sock, entry->data + sent_bytes, entry->cur_size - sent_bytes, 0);
-    pthread_rwlock_unlock(&entry->rwlock);
-    if(cur_sent < 0) return;
+        send(info.sock, info.entry->data + sent_bytes, info.entry->cur_size - sent_bytes, 0);
+
+    if(cur_sent < 0) return NULL;
     sent_bytes += cur_sent;
   }
-
+  pthread_mutex_unlock(&info.entry->mutex);
+  log_message("after while in send from cache", 1);
+  return NULL;
 }
 
 void *handle_client(void *args) {
@@ -321,18 +337,20 @@ void *handle_client(void *args) {
 
     if (entry) {
       pthread_rwlock_unlock(&cache_lock);
-      pthread_rwlock_rdlock(&entry->rwlock);
+      pthread_mutex_lock(&entry->mutex);
 
       if (entry->is_complete) {
         log_message("url found in cache", 1);
         send_data(sock, entry->data, entry->data_type, entry->full_size);
-        pthread_rwlock_unlock(&entry->rwlock);
+        pthread_mutex_unlock(&entry->mutex);
         break;
       }
-      pthread_rwlock_unlock(&entry->rwlock);
+      pthread_mutex_unlock(&entry->mutex);
 
       log_message("entry incomplete", 1);
-      send_data_from_cache(sock, entry);
+      send_info* info = malloc(sizeof(send_info));
+      info->sock = sock; info->entry = entry;
+      send_data_from_cache(info);
       break;
     }
     pthread_rwlock_unlock(&cache_lock);
@@ -346,7 +364,6 @@ void *handle_client(void *args) {
     entry->data_type = NULL;
     entry->full_size = 0;
     entry->cur_size = 0;
-    pthread_rwlock_init(&entry->rwlock, NULL);
     pthread_mutex_init(&entry->mutex, NULL);
     pthread_cond_init(&entry->cond, NULL);
     entry->next = cache_head;
@@ -354,7 +371,19 @@ void *handle_client(void *args) {
 
     pthread_rwlock_unlock(&cache_lock);
 
-    if(load_to_cache_and_send(url, sock, entry) == -1) break;
+    if(fetch_header(url, entry) == -1) {
+      send_error(sock, entry->http_status);
+      break;
+    }
+
+    pthread_t tid;
+    send_info* info = malloc(sizeof(send_info));
+    info->sock = sock; info->entry = entry;
+    pthread_create(&tid, NULL, send_data_from_cache, info);
+
+    if(load_to_cache(url, sock, entry) == -1) break;
+    pthread_join(tid, NULL);
+    break;
   }
   close(sock);
   return NULL;
